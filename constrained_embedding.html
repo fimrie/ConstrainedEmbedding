@@ -1,0 +1,1096 @@
+
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h1 id="Constrained-Embedding">Constrained Embedding<a class="anchor-link" href="#Constrained-Embedding">&#182;</a></h1><p>My recent work has explored deep generative models where the goal is to design a compound that is highly similar (in a 3D sense) to either the molecule you started with or two fragments.</p>
+<p>We have assessed 3D similarity by generating conformers of the generated molecules, and comparing them to a conformation of the original molecule/fragments via several metrics. This approach has both the advantage AND the disadvantage of the generated conformers being independent of the target conformer.</p>
+<p>I recently learnt about the RDKit function <code>AllChem.ConstrainedEmbed()</code>, which generates conformations where the positions of a set of atoms are constrained to match the coordinates of a template molecule.</p>
+<p>Greg has two blog posts about the function (<a href="http://rdkit.blogspot.com/2013/12/using-allchemconstrainedembed.html">here</a> and <a href="http://rdkit.blogspot.com/2019/01/more-on-constrained-embedding.html">here</a>) but I wanted to explore this in a little more detail and assess how realistic these conformers were and if it could be useful in assessing 3D similarity.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h3 id="Requirements">Requirements<a class="anchor-link" href="#Requirements">&#182;</a></h3><p>The majority of this notebook uses rdkit and numpy only. At the end we will use py3Dmol to visualise some of the conformers. If you want to install this then skip this part/just look at our pretty pictures.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[1]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[2]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="kn">from</span> <span class="nn">rdkit</span> <span class="k">import</span> <span class="n">Chem</span>
+<span class="kn">from</span> <span class="nn">rdkit.Chem</span> <span class="k">import</span> <span class="n">AllChem</span>
+<span class="kn">from</span> <span class="nn">rdkit.Chem</span> <span class="k">import</span> <span class="n">Draw</span><span class="p">,</span> <span class="n">rdMolAlign</span>
+<span class="kn">from</span> <span class="nn">rdkit.Chem.Draw</span> <span class="k">import</span> <span class="n">IPythonConsole</span>
+<span class="kn">from</span> <span class="nn">rdkit</span> <span class="k">import</span> <span class="n">rdBase</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">rdBase</span><span class="o">.</span><span class="n">rdkitVersion</span><span class="p">)</span>
+
+<span class="kn">from</span> <span class="nn">utils</span> <span class="k">import</span> <span class="o">*</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>2018.09.1
+</pre>
+</div>
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>We're going to work with an example of fragment linking<sup>1</sup>, extracted from the PDB. To keep it simple, we'll use only the PBD structure of the linked fragments <a href="https://www.rcsb.org/structure/3IVX">PDB ID 3IVX</a> and assume the binding mode of the fragments is identical.</p>
+<p><a href="https://onlinelibrary.wiley.com/doi/full/10.1002/anie.200903821">1. Hung et al., Application of Fragment Growing and Fragment Linking to the Discovery of Inhibitors of Mycobacterium tuberculosis Pantothenate Synthetase. Angew. Chem., Int. Ed. 2009, 48, 8452–8456.</a></p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[3]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="n">hung_frags</span> <span class="o">=</span> <span class="s2">&quot;COc1ccc2c(c1)cc([*:1])n2CC(=O)O.c1ccc2oc([*:2])cc2c1&quot;</span>
+<span class="n">hung_3IVX</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">Chem</span><span class="o">.</span><span class="n">SDMolSupplier</span><span class="p">(</span><span class="s2">&quot;./3IVX_pdb_ligands.sdf&quot;</span><span class="p">)][</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">hung_3IVX_2d</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">Mol</span><span class="p">(</span><span class="n">hung_3IVX</span><span class="p">)</span>
+<span class="n">_</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">Compute2DCoords</span><span class="p">(</span><span class="n">hung_3IVX_2d</span><span class="p">)</span>
+
+<span class="n">hung_3IVX_noinfo</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">MolToSmiles</span><span class="p">(</span><span class="n">hung_3IVX</span><span class="p">)</span>
+
+<span class="n">to_display</span> <span class="o">=</span> <span class="p">[</span><span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="n">hung_frags</span><span class="p">),</span> <span class="n">hung_3IVX_2d</span><span class="p">]</span>
+
+<span class="n">Draw</span><span class="o">.</span><span class="n">MolsToGridImage</span><span class="p">(</span><span class="n">to_display</span><span class="p">,</span><span class="n">molsPerRow</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt output_prompt">Out[3]:</div>
+
+
+
+
+<div class="output_png output_subarea output_execute_result">
+<img src="data:image/png;base64,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
+"
+>
+</div>
+
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>Now let's get the 3D coordinates of the fragments, as these are what we want to compare our conformers of the full molecule to and the atoms we will use for our constrained embedding. We'll use a custom function <code>get_frags</code>, that accounts for multiple possible matches of the starting fragments.</p>
+<p>Once we've done this, let's check the alignment.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[4]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="n">du</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="s1">&#39;*&#39;</span><span class="p">)</span>
+<span class="n">clean_frag</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">RemoveHs</span><span class="p">(</span><span class="n">AllChem</span><span class="o">.</span><span class="n">ReplaceSubstructs</span><span class="p">(</span><span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="n">hung_frags</span><span class="p">),</span><span class="n">du</span><span class="p">,</span><span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="s1">&#39;[H]&#39;</span><span class="p">),</span><span class="kc">True</span><span class="p">)[</span><span class="mi">0</span><span class="p">])</span>
+<span class="n">frags_3d</span> <span class="o">=</span> <span class="n">get_frags</span><span class="p">(</span><span class="n">hung_3IVX</span><span class="p">,</span> <span class="n">clean_frag</span><span class="p">)</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stderr output_text">
+<pre>RDKit WARNING: [16:44:57] WARNING: not removing hydrogen atom without neighbors
+</pre>
+</div>
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[5]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="n">rms</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">,</span><span class="n">hung_3IVX</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS: </span><span class="si">%.3f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">rms</span><span class="p">)</span>
+<span class="n">Chem</span><span class="o">.</span><span class="n">SanitizeMol</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">)</span>
+<span class="n">Chem</span><span class="o">.</span><span class="n">SanitizeMol</span><span class="p">(</span><span class="n">hung_3IVX</span><span class="p">)</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS: 0.000
+</pre>
+</div>
+</div>
+
+<div class="output_area">
+
+<div class="prompt output_prompt">Out[5]:</div>
+
+
+
+
+<div class="output_text output_subarea output_execute_result">
+<pre>rdkit.Chem.rdmolops.SanitizeFlags.SANITIZE_NONE</pre>
+</div>
+
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h3 id="Unconstrained-conformer-generation">Unconstrained conformer generation<a class="anchor-link" href="#Unconstrained-conformer-generation">&#182;</a></h3><p>Let's see how good conformer generation is when we impose no additional constraints on the embedding.</p>
+<p>The molecule has seven rotatable bonds, so 50 conformers should be enough to sample the conformational space effectively<sup>1</sup>.</p>
+<p>In these examples, we use RDKit's default embedding algorithm and UFF as our force field.</p>
+<p><a href="https://pubs.acs.org/doi/abs/10.1021/ci2004658">1. Ebejer et al., Freely Available Conformer Generation Methods: How Good Are They? J. Chem. Inf. Model. 2012, 52, 1146–1158.</a></p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[6]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="n">num_confs</span> <span class="o">=</span> <span class="mi">50</span> <span class="c1"># How many conformers should each method generate.</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[7]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="n">rms_full_list</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">rms_frags_list</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">cenergy_list</span> <span class="o">=</span> <span class="p">[]</span>
+
+<span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">seed</span> <span class="ow">in</span> <span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">100001</span><span class="p">,</span> <span class="n">num_confs</span><span class="p">)]:</span>
+    <span class="c1"># Generate conformer</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="n">hung_3IVX_noinfo</span><span class="p">)</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">AddHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    <span class="n">AllChem</span><span class="o">.</span><span class="n">EmbedMolecule</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span><span class="n">randomSeed</span><span class="o">=</span><span class="n">seed</span><span class="p">)</span>
+    <span class="n">AllChem</span><span class="o">.</span><span class="n">UFFOptimizeMolecule</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    <span class="n">cenergy</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">UFFGetMoleculeForceField</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span><span class="o">.</span><span class="n">CalcEnergy</span><span class="p">()</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">RemoveHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    
+    <span class="c1"># Analyse conformer</span>
+    <span class="n">rms_full</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">hung_3IVX</span><span class="p">)</span> <span class="c1"># Consider using AllChem.GetBestRMS(nm, hung_3IVX)</span>
+    <span class="n">match</span> <span class="o">=</span> <span class="n">nm</span><span class="o">.</span><span class="n">GetSubstructMatch</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">match</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;molecule doesn&#39;t match the core&quot;</span><span class="p">)</span>
+    <span class="n">algMap</span> <span class="o">=</span> <span class="p">[(</span><span class="n">j</span><span class="p">,</span> <span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">match</span><span class="p">)]</span>
+    <span class="n">rms_frags</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">frags_3d</span><span class="p">,</span> <span class="n">atomMap</span><span class="o">=</span><span class="n">algMap</span><span class="p">)</span>
+    
+    <span class="n">rms_full_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_full</span><span class="p">)</span>
+    <span class="n">rms_frags_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_frags</span><span class="p">)</span>
+    <span class="n">cenergy_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cenergy</span><span class="p">)</span>
+    
+    <span class="c1"># Record best</span>
+    <span class="k">if</span> <span class="n">rms_full</span> <span class="o">==</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">):</span>
+        <span class="n">best_unconstrained</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">Mol</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+        <span class="n">best_unconstrained</span><span class="o">.</span><span class="n">SetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">cenergy</span><span class="p">)</span>
+    
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Full Mol</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">)))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Fragments</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">)))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Energy</span><span class="se">\t\t</span><span class="s2">- Mean: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">)))</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS Full Mol	- Mean: 1.98,	Min: 1.07,	Max: 3.00
+RMS Fragments	- Mean: 1.73,	Min: 0.89,	Max: 2.64
+Energy		- Mean: 119.2,	Min: 117.9,	Max: 123.2
+</pre>
+</div>
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>A best RMSD of 1.07 Angstroms suggests some ability to sample conformers, but is still a fair way from optimal.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h3 id="Constrained-Embedding">Constrained Embedding<a class="anchor-link" href="#Constrained-Embedding">&#182;</a></h3><p>Will a constrained embedding help us? Let's use the coordinates of the fragments to constrain the embedding of the molecule.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[8]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="n">rms_full_list</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">rms_frags_list</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">cenergy_list</span> <span class="o">=</span> <span class="p">[]</span>
+
+<span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">seed</span> <span class="ow">in</span> <span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">100001</span><span class="p">,</span> <span class="n">num_confs</span><span class="p">)]:</span>
+    <span class="c1"># Generate conformer</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="n">hung_3IVX_noinfo</span><span class="p">)</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">AddHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    <span class="n">AllChem</span><span class="o">.</span><span class="n">ConstrainedEmbed</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span><span class="n">frags_3d</span><span class="p">,</span><span class="n">randomseed</span><span class="o">=</span><span class="n">seed</span><span class="p">)</span>
+    <span class="n">cenergy</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">UFFGetMoleculeForceField</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span><span class="o">.</span><span class="n">CalcEnergy</span><span class="p">()</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">RemoveHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    
+    <span class="c1"># Analyse conformer</span>
+    <span class="n">rms_full</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">hung_3IVX</span><span class="p">)</span>
+    <span class="n">match</span> <span class="o">=</span> <span class="n">nm</span><span class="o">.</span><span class="n">GetSubstructMatch</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">match</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;molecule doesn&#39;t match the core&quot;</span><span class="p">)</span>
+    <span class="n">algMap</span> <span class="o">=</span> <span class="p">[(</span><span class="n">j</span><span class="p">,</span> <span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">match</span><span class="p">)]</span>
+    <span class="n">rms_frags</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">frags_3d</span><span class="p">,</span> <span class="n">atomMap</span><span class="o">=</span><span class="n">algMap</span><span class="p">)</span> <span class="c1"># Note we could access this directly with rms_frags = float(nm.GetProp(&#39;EmbedRMS&#39;))</span>
+    
+    <span class="n">rms_full_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_full</span><span class="p">)</span>
+    <span class="n">rms_frags_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_frags</span><span class="p">)</span>
+    <span class="n">cenergy_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cenergy</span><span class="p">)</span>
+    
+    <span class="c1"># Record best</span>
+    <span class="k">if</span> <span class="n">rms_full</span> <span class="o">==</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">):</span>
+        <span class="n">best_constrained</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">Mol</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+        <span class="n">best_constrained</span><span class="o">.</span><span class="n">SetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">cenergy</span><span class="p">)</span>
+    
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Full Mol</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">)))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Fragments</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">)))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Energy</span><span class="se">\t\t</span><span class="s2">- Mean: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">)))</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS Full Mol	- Mean: 0.60,	Min: 0.17,	Max: 0.84
+RMS Fragments	- Mean: 0.09,	Min: 0.08,	Max: 0.09
+Energy		- Mean: 139.8,	Min: 133.6,	Max: 147.1
+</pre>
+</div>
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>These conformers are MUCH better, with the worst conformer more similar than the best unconstrained conformer, and the conformations of the fragments being almost identical to the reference molecule as a result of the additional constraints.</p>
+<p>However, note that the average energy has increased, suggesting some conformational strain. We would ideally like the conformers generated to be no more strained than in the unconstrained case, so let's try adding an additional minimisation step after performing the constrained embedding.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[9]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="n">rms_full_list</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">rms_frags_list</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">cenergy_list</span> <span class="o">=</span> <span class="p">[]</span>
+
+<span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">seed</span> <span class="ow">in</span> <span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">100001</span><span class="p">,</span> <span class="n">num_confs</span><span class="p">)]:</span>
+    <span class="c1"># Generate conformer</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="n">hung_3IVX_noinfo</span><span class="p">)</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">AddHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    <span class="n">AllChem</span><span class="o">.</span><span class="n">ConstrainedEmbed</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span><span class="n">frags_3d</span><span class="p">,</span><span class="n">randomseed</span><span class="o">=</span><span class="n">seed</span><span class="p">)</span>
+    <span class="n">AllChem</span><span class="o">.</span><span class="n">UFFOptimizeMolecule</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    <span class="n">cenergy</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">UFFGetMoleculeForceField</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span><span class="o">.</span><span class="n">CalcEnergy</span><span class="p">()</span>
+    <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">RemoveHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+    
+    <span class="c1"># Analyse conformer</span>
+    <span class="n">rms_full</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">hung_3IVX</span><span class="p">)</span>
+    <span class="n">match</span> <span class="o">=</span> <span class="n">nm</span><span class="o">.</span><span class="n">GetSubstructMatch</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">match</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;molecule doesn&#39;t match the core&quot;</span><span class="p">)</span>
+    <span class="n">algMap</span> <span class="o">=</span> <span class="p">[(</span><span class="n">j</span><span class="p">,</span> <span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">match</span><span class="p">)]</span>
+    <span class="n">rms_frags</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">frags_3d</span><span class="p">,</span> <span class="n">atomMap</span><span class="o">=</span><span class="n">algMap</span><span class="p">)</span>
+    
+    <span class="n">rms_full_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_full</span><span class="p">)</span>
+    <span class="n">rms_frags_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_frags</span><span class="p">)</span>
+    <span class="n">cenergy_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cenergy</span><span class="p">)</span>
+    
+    <span class="c1"># Record best</span>
+    <span class="k">if</span> <span class="n">rms_full</span> <span class="o">==</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">):</span>
+        <span class="n">best_constrainedopt</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">Mol</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+        <span class="n">best_constrainedopt</span><span class="o">.</span><span class="n">SetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">cenergy</span><span class="p">)</span>
+    
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Full Mol</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">)))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Fragments</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">)))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Energy</span><span class="se">\t\t</span><span class="s2">- Mean: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">)))</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS Full Mol	- Mean: 1.15,	Min: 0.88,	Max: 1.89
+RMS Fragments	- Mean: 0.89,	Min: 0.72,	Max: 1.63
+Energy		- Mean: 119.2,	Min: 118.2,	Max: 123.7
+</pre>
+</div>
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>The RMSDs have naturally gotten worse, in particular the fragments, but the average RMSD is almost 1 Angstom lower than in the unconstrained case and crucially the average energy of the conformations now match the uncontrained generation.</p>
+<p>This suggests this is a valid way to bias the search of conformational space to the space that we're interested in, but if we add an additional minimisation step, will not produce strained conformers.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h3 id="Visualising">Visualising<a class="anchor-link" href="#Visualising">&#182;</a></h3><p>If you have <a href="https://pypi.org/project/py3Dmol/">py3dmol</a>, let's take a look at the conformers themselves.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[10]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="kn">import</span> <span class="nn">py3Dmol</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[11]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="k">def</span> <span class="nf">drawit</span><span class="p">(</span><span class="n">ms</span><span class="p">,</span> <span class="n">p</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confId</span><span class="o">=-</span><span class="mi">1</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">p</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">p</span> <span class="o">=</span> <span class="n">py3Dmol</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">width</span><span class="o">=</span><span class="mi">400</span><span class="p">,</span> <span class="n">height</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span>
+        <span class="n">p</span><span class="o">.</span><span class="n">removeAllModels</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">ms</span><span class="p">:</span>
+            <span class="n">mb</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">MolToMolBlock</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">confId</span><span class="o">=</span><span class="n">confId</span><span class="p">)</span>
+            <span class="n">p</span><span class="o">.</span><span class="n">addModel</span><span class="p">(</span><span class="n">mb</span><span class="p">,</span> <span class="s1">&#39;sdf&#39;</span><span class="p">)</span>
+        <span class="n">p</span><span class="o">.</span><span class="n">setStyle</span><span class="p">({</span><span class="s1">&#39;stick&#39;</span><span class="p">:{}})</span>
+        <span class="n">p</span><span class="o">.</span><span class="n">setBackgroundColor</span><span class="p">(</span><span class="s1">&#39;0xeeeeee&#39;</span><span class="p">)</span>
+        <span class="n">p</span><span class="o">.</span><span class="n">zoomTo</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">p</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>This is the active conformation extracted from the PDB, together with the energy of the conformer under the UFF force field.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[12]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Energy: </span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">UFFGetMoleculeForceField</span><span class="p">(</span><span class="n">hung_3IVX</span><span class="p">)</span><span class="o">.</span><span class="n">CalcEnergy</span><span class="p">())</span>
+<span class="n">drawit</span><span class="p">([</span><span class="n">hung_3IVX</span><span class="p">])</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>Energy: 206.9
+</pre>
+</div>
+</div>
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+
+<div class="output_html rendered_html output_subarea ">
+<div id="3dmolviewer_15613911130317097"  style="position: relative; width: 400px; height: 300px">
+        <p id="3dmolwarning_15613911130317097" style="background-color:#ffcccc;color:black">You appear to be running in JupyterLab (or JavaScript failed to load for some other reason).  You need to install the 3dmol extension: <br>
+        <tt>jupyter labextension install jupyterlab_3dmol</tt></p>
+        </div>
+<script>
+
+var loadScriptAsync = function(uri){
+  return new Promise((resolve, reject) => {
+    var tag = document.createElement('script');
+    tag.src = uri;
+    tag.async = true;
+    tag.onload = () => {
+      resolve();
+    };
+  var firstScriptTag = document.getElementsByTagName('script')[0];
+  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+});
+};
+
+if(typeof $3Dmolpromise === 'undefined') {
+$3Dmolpromise = null;
+  $3Dmolpromise = loadScriptAsync('https://3dmol.csb.pitt.edu/build/3Dmol.js');
+}
+
+var viewer_15613911130317097 = null;
+var warn = document.getElementById("3dmolwarning_15613911130317097");
+if(warn) {
+    warn.parentNode.removeChild(warn);
+}
+$3Dmolpromise.then(function() {
+viewer_15613911130317097 = $3Dmol.createViewer($("#3dmolviewer_15613911130317097"),{backgroundColor:"white"});
+	viewer_15613911130317097.removeAllModels();
+	viewer_15613911130317097.addModel("3IVX_FG6_A_302\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   18.6710   11.0570   -0.9580 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.1740   10.3380   -1.3780 N   0  0  0  0  0  0  0  0  0  0  0  0\n   18.3150   12.1710   -0.5580 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.6490   10.1280   -1.5980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   11.0750    9.7570   -5.0100 C   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0190   10.3670    1.2910 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1490   13.0720    3.7420 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0670   11.6710    3.5830 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2690    8.7830    8.1850 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.9810    7.7440    7.3010 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7120    9.8780   -4.7050 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.8850    9.9210    7.6900 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3160    7.8940    5.9520 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.7120    9.9650   -3.7420 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.1110   10.3400   -2.9690 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7670   10.9740    5.7220 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1290   10.6380   -0.7250 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.0740   11.3750    1.8160 N   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4620    9.9520   -5.3340 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3660    9.4720    4.2000 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8920   10.7650    0.9530 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3910   10.0610   -4.3290 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.8640   10.6520    4.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4110   10.5900   -0.3130 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1880    9.9990    6.3980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1080   10.4150   -2.0560 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.9070    9.0160    5.5280 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3880   10.2200   -2.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.5540   11.6840    3.4010 S   0  0  0  0  0  0  0  0  0  0  0  0\n   19.8340   10.6020   -0.9190 O   0  0  0  0  0  0  0  0  0  0  0  0\n  4  1  1  0\n  1 30  2  0\n  1  3  1  0\n 28  2  1  0\n  4  2  1  0\n  2 24  1  0\n 19  5  1  0\n 21  6  2  0\n 29  7  2  0\n 29  8  2  0\n 10  9  2  0\n 12  9  1  0\n 13 10  1  0\n 11 22  2  0\n 11 14  1  0\n 25 12  2  0\n 27 13  2  0\n 14 28  2  0\n 22 15  1  0\n 15 26  2  0\n 23 16  2  0\n 16 25  1  0\n 26 17  1  0\n 17 24  2  0\n 21 18  1  0\n 18 29  1  0\n 19 22  1  0\n 20 23  1  0\n 20 27  1  0\n 24 21  1  0\n 29 23  1  0\n 27 25  1  0\n 28 26  1  0\nA    1\nC\nA    2\nN\nA    3\nO\nA    4\nCA\nA    5\nCAA\nA    6\nOAC\nA    7\nOAD\nA    8\nOAE\nA    9\nCAG\nA   10\nCAH\nA   11\nCAI\nA   12\nCAJ\nA   13\nCAK\nA   14\nCAL\nA   15\nCAM\nA   16\nCAN\nA   17\nCAO\nA   18\nNAQ\nA   19\nOAR\nA   20\nOAS\nA   21\nCAU\nA   22\nCAV\nA   23\nCAW\nA   24\nCAX\nA   25\nCAY\nA   26\nCAZ\nA   27\nCBA\nA   28\nCBB\nA   29\nSBD\nA   30\nOXT\nM  END\n","sdf");
+	viewer_15613911130317097.setStyle({"stick": {}});
+	viewer_15613911130317097.setBackgroundColor("0xeeeeee");
+	viewer_15613911130317097.zoomTo();
+viewer_15613911130317097.render();
+});
+</script>
+</div>
+
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>Let's look at the best conformer through the unconstrained conformer generation.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[13]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS frags: </span><span class="si">%.3f</span><span class="s2">, Energy: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">,</span> <span class="n">best_unconstrained</span><span class="p">),</span> <span class="n">best_unconstrained</span><span class="o">.</span><span class="n">GetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">)))</span>
+<span class="n">drawit</span><span class="p">((</span><span class="n">hung_3IVX</span><span class="p">,</span> <span class="n">best_unconstrained</span><span class="p">))</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS frags: 1.074, Energy: 118.3
+</pre>
+</div>
+</div>
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+
+<div class="output_html rendered_html output_subarea ">
+<div id="3dmolviewer_1561391113038576"  style="position: relative; width: 400px; height: 300px">
+        <p id="3dmolwarning_1561391113038576" style="background-color:#ffcccc;color:black">You appear to be running in JupyterLab (or JavaScript failed to load for some other reason).  You need to install the 3dmol extension: <br>
+        <tt>jupyter labextension install jupyterlab_3dmol</tt></p>
+        </div>
+<script>
+
+var loadScriptAsync = function(uri){
+  return new Promise((resolve, reject) => {
+    var tag = document.createElement('script');
+    tag.src = uri;
+    tag.async = true;
+    tag.onload = () => {
+      resolve();
+    };
+  var firstScriptTag = document.getElementsByTagName('script')[0];
+  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+});
+};
+
+if(typeof $3Dmolpromise === 'undefined') {
+$3Dmolpromise = null;
+  $3Dmolpromise = loadScriptAsync('https://3dmol.csb.pitt.edu/build/3Dmol.js');
+}
+
+var viewer_1561391113038576 = null;
+var warn = document.getElementById("3dmolwarning_1561391113038576");
+if(warn) {
+    warn.parentNode.removeChild(warn);
+}
+$3Dmolpromise.then(function() {
+viewer_1561391113038576 = $3Dmol.createViewer($("#3dmolviewer_1561391113038576"),{backgroundColor:"white"});
+	viewer_1561391113038576.removeAllModels();
+	viewer_1561391113038576.addModel("3IVX_FG6_A_302\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   18.6710   11.0570   -0.9580 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.1740   10.3380   -1.3780 N   0  0  0  0  0  0  0  0  0  0  0  0\n   18.3150   12.1710   -0.5580 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.6490   10.1280   -1.5980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   11.0750    9.7570   -5.0100 C   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0190   10.3670    1.2910 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1490   13.0720    3.7420 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0670   11.6710    3.5830 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2690    8.7830    8.1850 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.9810    7.7440    7.3010 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7120    9.8780   -4.7050 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.8850    9.9210    7.6900 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3160    7.8940    5.9520 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.7120    9.9650   -3.7420 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.1110   10.3400   -2.9690 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7670   10.9740    5.7220 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1290   10.6380   -0.7250 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.0740   11.3750    1.8160 N   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4620    9.9520   -5.3340 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3660    9.4720    4.2000 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8920   10.7650    0.9530 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3910   10.0610   -4.3290 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.8640   10.6520    4.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4110   10.5900   -0.3130 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1880    9.9990    6.3980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1080   10.4150   -2.0560 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.9070    9.0160    5.5280 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3880   10.2200   -2.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.5540   11.6840    3.4010 S   0  0  0  0  0  0  0  0  0  0  0  0\n   19.8340   10.6020   -0.9190 O   0  0  0  0  0  0  0  0  0  0  0  0\n  4  1  1  0\n  1 30  2  0\n  1  3  1  0\n 28  2  1  0\n  4  2  1  0\n  2 24  1  0\n 19  5  1  0\n 21  6  2  0\n 29  7  2  0\n 29  8  2  0\n 10  9  2  0\n 12  9  1  0\n 13 10  1  0\n 11 22  2  0\n 11 14  1  0\n 25 12  2  0\n 27 13  2  0\n 14 28  2  0\n 22 15  1  0\n 15 26  2  0\n 23 16  2  0\n 16 25  1  0\n 26 17  1  0\n 17 24  2  0\n 21 18  1  0\n 18 29  1  0\n 19 22  1  0\n 20 23  1  0\n 20 27  1  0\n 24 21  1  0\n 29 23  1  0\n 27 25  1  0\n 28 26  1  0\nA    1\nC\nA    2\nN\nA    3\nO\nA    4\nCA\nA    5\nCAA\nA    6\nOAC\nA    7\nOAD\nA    8\nOAE\nA    9\nCAG\nA   10\nCAH\nA   11\nCAI\nA   12\nCAJ\nA   13\nCAK\nA   14\nCAL\nA   15\nCAM\nA   16\nCAN\nA   17\nCAO\nA   18\nNAQ\nA   19\nOAR\nA   20\nOAS\nA   21\nCAU\nA   22\nCAV\nA   23\nCAW\nA   24\nCAX\nA   25\nCAY\nA   26\nCAZ\nA   27\nCBA\nA   28\nCBB\nA   29\nSBD\nA   30\nOXT\nM  END\n","sdf");
+	viewer_1561391113038576.addModel("\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   11.4583   10.1116   -5.4853 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.8151    9.6826   -5.4375 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.6403    9.7959   -4.3091 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.9700    9.3283   -4.4033 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8465    9.4132   -3.3073 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3634    9.9676   -2.1161 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.0768   10.4301   -2.0272 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.1846   10.3616   -3.0946 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.9026   10.9490   -0.7665 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1262   10.7780   -0.1201 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4011   11.2389    1.2632 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.3660   10.7542    1.9107 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.5693   12.2318    1.8791 N   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7780   12.6905    3.5361 S   0  0  0  0  0  0  0  0  0  0  0  0\n   13.7931   13.7705    3.8840 O   0  0  0  0  0  0  0  0  0  0  0  0\n   16.1687   13.2206    3.7457 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.4941   11.3076    4.5741 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4836   10.4876    5.1057 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7859    9.5496    5.8304 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.2281    8.4655    6.5852 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.2556    7.6716    7.2215 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.8822    7.9779    7.0882 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4690    9.0806    6.3172 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.4546    9.8472    5.6998 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2923   10.9045    4.9431 O   0  0  0  0  0  0  0  0  0  0  0  0\n   16.0193   10.1568   -0.9472 N   0  0  0  0  0  0  0  0  0  0  0  0\n   17.4345    9.8632   -0.6824 C   0  0  0  0  0  0  0  0  0  0  0  0\n   18.2494   11.1138   -0.7719 C   0  0  0  0  0  0  0  0  0  0  0  0\n   18.3148   11.7465   -1.8596 O   0  0  0  0  0  0  0  0  0  0  0  0\n   18.9378   11.5767    0.3449 O   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0\n  2  3  1  0\n  3  4  2  0\n  4  5  1  0\n  5  6  2  0\n  6  7  1  0\n  7  8  2  0\n  7  9  1  0\n  9 10  2  0\n 10 11  1  0\n 11 12  2  0\n 11 13  1  0\n 13 14  1  0\n 14 15  2  0\n 14 16  2  0\n 14 17  1  0\n 17 18  2  0\n 18 19  1  0\n 19 20  2  0\n 20 21  1  0\n 21 22  2  0\n 22 23  1  0\n 23 24  2  0\n 24 25  1  0\n 10 26  1  0\n 26 27  1  0\n 27 28  1  0\n 28 29  2  0\n 28 30  1  0\n  8  3  1  0\n 25 17  1  0\n 26  6  1  0\n 24 19  1  0\nM  END\n","sdf");
+	viewer_1561391113038576.setStyle({"stick": {}});
+	viewer_1561391113038576.setBackgroundColor("0xeeeeee");
+	viewer_1561391113038576.zoomTo();
+viewer_1561391113038576.render();
+});
+</script>
+</div>
+
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[14]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS frags: </span><span class="si">%.3f</span><span class="s2">, Energy: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">,</span> <span class="n">best_constrained</span><span class="p">),</span> <span class="n">best_constrained</span><span class="o">.</span><span class="n">GetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">)))</span>
+<span class="n">drawit</span><span class="p">((</span><span class="n">hung_3IVX</span><span class="p">,</span> <span class="n">best_constrained</span><span class="p">))</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS frags: 0.093, Energy: 133.6
+</pre>
+</div>
+</div>
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+
+<div class="output_html rendered_html output_subarea ">
+<div id="3dmolviewer_15613911130487509"  style="position: relative; width: 400px; height: 300px">
+        <p id="3dmolwarning_15613911130487509" style="background-color:#ffcccc;color:black">You appear to be running in JupyterLab (or JavaScript failed to load for some other reason).  You need to install the 3dmol extension: <br>
+        <tt>jupyter labextension install jupyterlab_3dmol</tt></p>
+        </div>
+<script>
+
+var loadScriptAsync = function(uri){
+  return new Promise((resolve, reject) => {
+    var tag = document.createElement('script');
+    tag.src = uri;
+    tag.async = true;
+    tag.onload = () => {
+      resolve();
+    };
+  var firstScriptTag = document.getElementsByTagName('script')[0];
+  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+});
+};
+
+if(typeof $3Dmolpromise === 'undefined') {
+$3Dmolpromise = null;
+  $3Dmolpromise = loadScriptAsync('https://3dmol.csb.pitt.edu/build/3Dmol.js');
+}
+
+var viewer_15613911130487509 = null;
+var warn = document.getElementById("3dmolwarning_15613911130487509");
+if(warn) {
+    warn.parentNode.removeChild(warn);
+}
+$3Dmolpromise.then(function() {
+viewer_15613911130487509 = $3Dmol.createViewer($("#3dmolviewer_15613911130487509"),{backgroundColor:"white"});
+	viewer_15613911130487509.removeAllModels();
+	viewer_15613911130487509.addModel("3IVX_FG6_A_302\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   18.6710   11.0570   -0.9580 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.1740   10.3380   -1.3780 N   0  0  0  0  0  0  0  0  0  0  0  0\n   18.3150   12.1710   -0.5580 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.6490   10.1280   -1.5980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   11.0750    9.7570   -5.0100 C   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0190   10.3670    1.2910 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1490   13.0720    3.7420 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0670   11.6710    3.5830 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2690    8.7830    8.1850 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.9810    7.7440    7.3010 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7120    9.8780   -4.7050 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.8850    9.9210    7.6900 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3160    7.8940    5.9520 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.7120    9.9650   -3.7420 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.1110   10.3400   -2.9690 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7670   10.9740    5.7220 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1290   10.6380   -0.7250 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.0740   11.3750    1.8160 N   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4620    9.9520   -5.3340 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3660    9.4720    4.2000 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8920   10.7650    0.9530 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3910   10.0610   -4.3290 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.8640   10.6520    4.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4110   10.5900   -0.3130 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1880    9.9990    6.3980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1080   10.4150   -2.0560 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.9070    9.0160    5.5280 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3880   10.2200   -2.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.5540   11.6840    3.4010 S   0  0  0  0  0  0  0  0  0  0  0  0\n   19.8340   10.6020   -0.9190 O   0  0  0  0  0  0  0  0  0  0  0  0\n  4  1  1  0\n  1 30  2  0\n  1  3  1  0\n 28  2  1  0\n  4  2  1  0\n  2 24  1  0\n 19  5  1  0\n 21  6  2  0\n 29  7  2  0\n 29  8  2  0\n 10  9  2  0\n 12  9  1  0\n 13 10  1  0\n 11 22  2  0\n 11 14  1  0\n 25 12  2  0\n 27 13  2  0\n 14 28  2  0\n 22 15  1  0\n 15 26  2  0\n 23 16  2  0\n 16 25  1  0\n 26 17  1  0\n 17 24  2  0\n 21 18  1  0\n 18 29  1  0\n 19 22  1  0\n 20 23  1  0\n 20 27  1  0\n 24 21  1  0\n 29 23  1  0\n 27 25  1  0\n 28 26  1  0\nA    1\nC\nA    2\nN\nA    3\nO\nA    4\nCA\nA    5\nCAA\nA    6\nOAC\nA    7\nOAD\nA    8\nOAE\nA    9\nCAG\nA   10\nCAH\nA   11\nCAI\nA   12\nCAJ\nA   13\nCAK\nA   14\nCAL\nA   15\nCAM\nA   16\nCAN\nA   17\nCAO\nA   18\nNAQ\nA   19\nOAR\nA   20\nOAS\nA   21\nCAU\nA   22\nCAV\nA   23\nCAW\nA   24\nCAX\nA   25\nCAY\nA   26\nCAZ\nA   27\nCBA\nA   28\nCBB\nA   29\nSBD\nA   30\nOXT\nM  END\n","sdf");
+	viewer_15613911130487509.addModel("\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   11.0101    9.7781   -5.0354 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.3908    9.9253   -5.3284 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3718   10.0570   -4.3479 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7048    9.8873   -4.7477 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.7403    9.9732   -3.8224 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4196   10.2462   -2.4948 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1224   10.4249   -2.0983 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.0666   10.3344   -2.9929 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1218   10.6361   -0.7469 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4596   10.5482   -0.3812 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.9114   10.6003    0.9867 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.8631    9.8719    1.3768 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.2548   11.4894    1.8738 N   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8238   11.7087    3.4632 S   0  0  0  0  0  0  0  0  0  0  0  0\n   15.6168   13.1493    3.8400 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.2901   11.3916    3.5618 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.9196   10.6883    4.5402 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7856   11.0718    5.8414 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1736   10.0377    6.4473 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.8501    9.9005    7.7820 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2364    8.7128    8.1820 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.9700    7.7019    7.2341 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3197    7.8786    5.8733 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.9347    9.0787    5.5043 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3891    9.4852    4.3223 O   0  0  0  0  0  0  0  0  0  0  0  0\n   16.2632   10.3421   -1.4552 N   0  0  0  0  0  0  0  0  0  0  0  0\n   17.6885    9.9660   -1.4905 C   0  0  0  0  0  0  0  0  0  0  0  0\n   18.6471   10.9844   -0.9608 C   0  0  0  0  0  0  0  0  0  0  0  0\n   19.8641   10.6684   -0.8921 O   0  0  0  0  0  0  0  0  0  0  0  0\n   18.2353   12.2399   -0.5505 O   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0\n  2  3  1  0\n  3  4  2  0\n  4  5  1  0\n  5  6  2  0\n  6  7  1  0\n  7  8  2  0\n  7  9  1  0\n  9 10  2  0\n 10 11  1  0\n 11 12  2  0\n 11 13  1  0\n 13 14  1  0\n 14 15  2  0\n 14 16  2  0\n 14 17  1  0\n 17 18  2  0\n 18 19  1  0\n 19 20  2  0\n 20 21  1  0\n 21 22  2  0\n 22 23  1  0\n 23 24  2  0\n 24 25  1  0\n 10 26  1  0\n 26 27  1  0\n 27 28  1  0\n 28 29  2  0\n 28 30  1  0\n  8  3  1  0\n 25 17  1  0\n 26  6  1  0\n 24 19  1  0\nM  END\n","sdf");
+	viewer_15613911130487509.setStyle({"stick": {}});
+	viewer_15613911130487509.setBackgroundColor("0xeeeeee");
+	viewer_15613911130487509.zoomTo();
+viewer_15613911130487509.render();
+});
+</script>
+</div>
+
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[15]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS frags: </span><span class="si">%.3f</span><span class="s2">, Energy: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">,</span> <span class="n">best_constrainedopt</span><span class="p">),</span> <span class="n">best_constrainedopt</span><span class="o">.</span><span class="n">GetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">)))</span>
+<span class="n">drawit</span><span class="p">((</span><span class="n">hung_3IVX</span><span class="p">,</span> <span class="n">best_constrainedopt</span><span class="p">))</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS frags: 0.724, Energy: 118.7
+</pre>
+</div>
+</div>
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+
+<div class="output_html rendered_html output_subarea ">
+<div id="3dmolviewer_15613911130564756"  style="position: relative; width: 400px; height: 300px">
+        <p id="3dmolwarning_15613911130564756" style="background-color:#ffcccc;color:black">You appear to be running in JupyterLab (or JavaScript failed to load for some other reason).  You need to install the 3dmol extension: <br>
+        <tt>jupyter labextension install jupyterlab_3dmol</tt></p>
+        </div>
+<script>
+
+var loadScriptAsync = function(uri){
+  return new Promise((resolve, reject) => {
+    var tag = document.createElement('script');
+    tag.src = uri;
+    tag.async = true;
+    tag.onload = () => {
+      resolve();
+    };
+  var firstScriptTag = document.getElementsByTagName('script')[0];
+  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+});
+};
+
+if(typeof $3Dmolpromise === 'undefined') {
+$3Dmolpromise = null;
+  $3Dmolpromise = loadScriptAsync('https://3dmol.csb.pitt.edu/build/3Dmol.js');
+}
+
+var viewer_15613911130564756 = null;
+var warn = document.getElementById("3dmolwarning_15613911130564756");
+if(warn) {
+    warn.parentNode.removeChild(warn);
+}
+$3Dmolpromise.then(function() {
+viewer_15613911130564756 = $3Dmol.createViewer($("#3dmolviewer_15613911130564756"),{backgroundColor:"white"});
+	viewer_15613911130564756.removeAllModels();
+	viewer_15613911130564756.addModel("3IVX_FG6_A_302\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   18.6710   11.0570   -0.9580 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.1740   10.3380   -1.3780 N   0  0  0  0  0  0  0  0  0  0  0  0\n   18.3150   12.1710   -0.5580 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.6490   10.1280   -1.5980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   11.0750    9.7570   -5.0100 C   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0190   10.3670    1.2910 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1490   13.0720    3.7420 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0670   11.6710    3.5830 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2690    8.7830    8.1850 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.9810    7.7440    7.3010 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7120    9.8780   -4.7050 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.8850    9.9210    7.6900 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3160    7.8940    5.9520 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.7120    9.9650   -3.7420 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.1110   10.3400   -2.9690 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7670   10.9740    5.7220 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1290   10.6380   -0.7250 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.0740   11.3750    1.8160 N   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4620    9.9520   -5.3340 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3660    9.4720    4.2000 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8920   10.7650    0.9530 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3910   10.0610   -4.3290 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.8640   10.6520    4.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4110   10.5900   -0.3130 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1880    9.9990    6.3980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1080   10.4150   -2.0560 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.9070    9.0160    5.5280 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3880   10.2200   -2.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.5540   11.6840    3.4010 S   0  0  0  0  0  0  0  0  0  0  0  0\n   19.8340   10.6020   -0.9190 O   0  0  0  0  0  0  0  0  0  0  0  0\n  4  1  1  0\n  1 30  2  0\n  1  3  1  0\n 28  2  1  0\n  4  2  1  0\n  2 24  1  0\n 19  5  1  0\n 21  6  2  0\n 29  7  2  0\n 29  8  2  0\n 10  9  2  0\n 12  9  1  0\n 13 10  1  0\n 11 22  2  0\n 11 14  1  0\n 25 12  2  0\n 27 13  2  0\n 14 28  2  0\n 22 15  1  0\n 15 26  2  0\n 23 16  2  0\n 16 25  1  0\n 26 17  1  0\n 17 24  2  0\n 21 18  1  0\n 18 29  1  0\n 19 22  1  0\n 20 23  1  0\n 20 27  1  0\n 24 21  1  0\n 29 23  1  0\n 27 25  1  0\n 28 26  1  0\nA    1\nC\nA    2\nN\nA    3\nO\nA    4\nCA\nA    5\nCAA\nA    6\nOAC\nA    7\nOAD\nA    8\nOAE\nA    9\nCAG\nA   10\nCAH\nA   11\nCAI\nA   12\nCAJ\nA   13\nCAK\nA   14\nCAL\nA   15\nCAM\nA   16\nCAN\nA   17\nCAO\nA   18\nNAQ\nA   19\nOAR\nA   20\nOAS\nA   21\nCAU\nA   22\nCAV\nA   23\nCAW\nA   24\nCAX\nA   25\nCAY\nA   26\nCAZ\nA   27\nCBA\nA   28\nCBB\nA   29\nSBD\nA   30\nOXT\nM  END\n","sdf");
+	viewer_15613911130564756.addModel("\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   10.9689   10.1208   -4.6177 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.3267   10.0393   -5.0381 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.4261   10.0630   -4.1676 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7224    9.9791   -4.7246 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8645   10.0001   -3.9049 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.6809   10.0991   -2.5223 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.4260   10.1849   -1.9797 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2750   10.1712   -2.7640 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.5654   10.3050   -0.6162 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.9399   10.2920   -0.3811 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.5530   10.4689    0.9554 C   0  0  0  0  0  0  0  0  0  0  0  0\n   17.7288   10.9106    1.0550 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8085   10.1652    2.1420 N   0  0  0  0  0  0  0  0  0  0  0  0\n   16.4576   10.4622    3.7205 S   0  0  0  0  0  0  0  0  0  0  0  0\n   16.7418   11.9305    3.8694 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.7221    9.6728    3.9095 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.2867    9.9750    4.9299 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1641   10.5353    6.1968 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1292    9.8354    6.7727 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.5446    9.9425    8.0325 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4832    9.0698    8.3372 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.0386    8.1237    7.3858 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.6513    8.0420    6.1213 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.6990    8.9187    5.8494 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.4020    9.0119    4.7476 O   0  0  0  0  0  0  0  0  0  0  0  0\n   16.6223   10.1495   -1.5539 N   0  0  0  0  0  0  0  0  0  0  0  0\n   18.0766   10.0863   -1.7479 C   0  0  0  0  0  0  0  0  0  0  0  0\n   18.6563   11.4552   -1.9376 C   0  0  0  0  0  0  0  0  0  0  0  0\n   19.8967   11.5848   -2.1145 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.8386   12.5824   -1.9211 O   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0\n  2  3  1  0\n  3  4  2  0\n  4  5  1  0\n  5  6  2  0\n  6  7  1  0\n  7  8  2  0\n  7  9  1  0\n  9 10  2  0\n 10 11  1  0\n 11 12  2  0\n 11 13  1  0\n 13 14  1  0\n 14 15  2  0\n 14 16  2  0\n 14 17  1  0\n 17 18  2  0\n 18 19  1  0\n 19 20  2  0\n 20 21  1  0\n 21 22  2  0\n 22 23  1  0\n 23 24  2  0\n 24 25  1  0\n 10 26  1  0\n 26 27  1  0\n 27 28  1  0\n 28 29  2  0\n 28 30  1  0\n  8  3  1  0\n 25 17  1  0\n 26  6  1  0\n 24 19  1  0\nM  END\n","sdf");
+	viewer_15613911130564756.setStyle({"stick": {}});
+	viewer_15613911130564756.setBackgroundColor("0xeeeeee");
+	viewer_15613911130564756.zoomTo();
+viewer_15613911130564756.render();
+});
+</script>
+</div>
+
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h1 id="An-alternate-option?">An alternate option?<a class="anchor-link" href="#An-alternate-option?">&#182;</a></h1><p>One of the issues with the constrained embedding was forcing atoms to match precisely the positions of the core atoms.</p>
+<p>If we relax this procedure slightly, will we produce lower energy conformers, that more closely match the active conformation than either of the two procedures above?</p>
+<p>To do this, we modify the function <code>ConstainedEmbed</code> to taken an additional argument <code>tdist</code>, that determines the maximum distance of the atoms to the positions of the core atoms i.e. the amount of slack we permit in the system.
+The implementation for this function, <code>ConstrainedEmbed_Slack</code>, can be found in utils.py.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>We're not sure exactly what value of <code>tdist</code> to use, so let's perform a quick search over posible values to see how it varies. Note <code>tdist=0</code> corresponds to the original <code>ConstrainedEmbed</code> function.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[16]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="k">for</span> <span class="n">dist</span> <span class="ow">in</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.75</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;DIST: &quot;</span><span class="p">,</span> <span class="n">dist</span><span class="p">)</span>
+
+    <span class="n">rms_full_list</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">rms_frags_list</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">cenergy_list</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">seed</span> <span class="ow">in</span> <span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">100001</span><span class="p">,</span> <span class="mi">50</span><span class="p">)]:</span>
+        <span class="c1"># Generate conformer</span>
+        <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">MolFromSmiles</span><span class="p">(</span><span class="n">hung_3IVX_noinfo</span><span class="p">)</span>
+        <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">AddHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+        <span class="n">ConstrainedEmbed_Slack</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span><span class="n">frags_3d</span><span class="p">,</span><span class="n">randomseed</span><span class="o">=</span><span class="n">seed</span><span class="p">,</span><span class="n">tdist</span><span class="o">=</span><span class="n">dist</span><span class="p">)</span>
+        <span class="n">cenergy</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">UFFGetMoleculeForceField</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span><span class="o">.</span><span class="n">CalcEnergy</span><span class="p">()</span>
+        <span class="n">nm</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">RemoveHs</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+        
+        <span class="c1"># Analyse conformer</span>
+        <span class="n">rms_full</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">hung_3IVX</span><span class="p">)</span>
+        <span class="n">match</span> <span class="o">=</span> <span class="n">nm</span><span class="o">.</span><span class="n">GetSubstructMatch</span><span class="p">(</span><span class="n">frags_3d</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">match</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;molecule doesn&#39;t match the core&quot;</span><span class="p">)</span>
+        <span class="n">algMap</span> <span class="o">=</span> <span class="p">[(</span><span class="n">j</span><span class="p">,</span> <span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">match</span><span class="p">)]</span>
+        <span class="n">rms_frags</span> <span class="o">=</span> <span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">nm</span><span class="p">,</span> <span class="n">frags_3d</span><span class="p">,</span> <span class="n">atomMap</span><span class="o">=</span><span class="n">algMap</span><span class="p">)</span> <span class="c1"># Note we could access this directly with rms_frags = float(nm.GetProp(&#39;EmbedRMS&#39;))</span>
+
+        <span class="n">rms_full_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_full</span><span class="p">)</span>
+        <span class="n">rms_frags_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rms_frags</span><span class="p">)</span>
+        <span class="n">cenergy_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cenergy</span><span class="p">)</span>
+        
+        <span class="c1"># Record best for dist ==0.75</span>
+        <span class="k">if</span> <span class="n">dist</span> <span class="o">==</span> <span class="mf">0.75</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">rms_full</span> <span class="o">==</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">):</span>
+                <span class="n">best_constrained_flex</span> <span class="o">=</span> <span class="n">Chem</span><span class="o">.</span><span class="n">Mol</span><span class="p">(</span><span class="n">nm</span><span class="p">)</span>
+                <span class="n">best_constrained_flex</span><span class="o">.</span><span class="n">SetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">cenergy</span><span class="p">)</span>
+
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Full Mol</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_full_list</span><span class="p">)))</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS Fragments</span><span class="se">\t</span><span class="s2">- Mean: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.2f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.2f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">rms_frags_list</span><span class="p">)))</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Energy</span><span class="se">\t\t</span><span class="s2">- Mean: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Min: </span><span class="si">%.1f</span><span class="s2">,</span><span class="se">\t</span><span class="s2">Max: </span><span class="si">%.1f</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">cenergy_list</span><span class="p">)))</span>
+    <span class="nb">print</span><span class="p">()</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>DIST:  0.0
+RMS Full Mol	- Mean: 0.62,	Min: 0.17,	Max: 0.89
+RMS Fragments	- Mean: 0.09,	Min: 0.08,	Max: 0.09
+Energy		- Mean: 140.6,	Min: 133.6,	Max: 147.1
+
+DIST:  0.1
+RMS Full Mol	- Mean: 0.60,	Min: 0.18,	Max: 0.83
+RMS Fragments	- Mean: 0.14,	Min: 0.12,	Max: 0.14
+Energy		- Mean: 132.8,	Min: 126.3,	Max: 138.2
+
+DIST:  0.25
+RMS Full Mol	- Mean: 0.59,	Min: 0.22,	Max: 0.94
+RMS Fragments	- Mean: 0.22,	Min: 0.21,	Max: 0.23
+Energy		- Mean: 126.9,	Min: 122.1,	Max: 133.3
+
+DIST:  0.5
+RMS Full Mol	- Mean: 0.70,	Min: 0.37,	Max: 1.14
+RMS Fragments	- Mean: 0.36,	Min: 0.35,	Max: 0.40
+Energy		- Mean: 123.2,	Min: 119.9,	Max: 142.3
+
+DIST:  0.75
+RMS Full Mol	- Mean: 0.86,	Min: 0.54,	Max: 1.39
+RMS Fragments	- Mean: 0.51,	Min: 0.48,	Max: 0.59
+Energy		- Mean: 122.0,	Min: 119.1,	Max: 154.4
+
+DIST:  1.0
+RMS Full Mol	- Mean: 0.91,	Min: 0.57,	Max: 1.30
+RMS Fragments	- Mean: 0.62,	Min: 0.51,	Max: 0.68
+Energy		- Mean: 121.8,	Min: 118.6,	Max: 127.3
+
+</pre>
+</div>
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>As we increase the value of <code>tdist</code> the RMSDs increase, but the energies increase, exhibiting the desired behaviour.</p>
+<p>For all values of <code>tdist</code> of at least 0.5, the energies of the conformers is in line with the unconstrained conformer generation, or the constained conformer generation that was followed by a subsequent unconstained optimisation step.</p>
+<p>However, the RMSDs are substantiall lower than both options. Let's visualise the best conformer with <code>tdist==0.75</code></p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered">
+<div class="input">
+<div class="prompt input_prompt">In&nbsp;[17]:</div>
+<div class="inner_cell">
+    <div class="input_area">
+<div class=" highlight hl-ipython3"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;RMS: </span><span class="si">%.3f</span><span class="s2">, Energy: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">AllChem</span><span class="o">.</span><span class="n">AlignMol</span><span class="p">(</span><span class="n">best_constrained_flex</span><span class="p">,</span> <span class="n">hung_3IVX</span><span class="p">),</span> <span class="n">best_constrained_flex</span><span class="o">.</span><span class="n">GetProp</span><span class="p">(</span><span class="s2">&quot;Energy&quot;</span><span class="p">)))</span>
+<span class="n">drawit</span><span class="p">((</span><span class="n">hung_3IVX</span><span class="p">,</span> <span class="n">best_constrained_flex</span><span class="p">))</span>
+</pre></div>
+
+</div>
+</div>
+</div>
+
+<div class="output_wrapper">
+<div class="output">
+
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>RMS: 0.537, Energy: 120.0
+</pre>
+</div>
+</div>
+
+<div class="output_area">
+
+<div class="prompt"></div>
+
+
+
+<div class="output_html rendered_html output_subarea ">
+<div id="3dmolviewer_15613911487341576"  style="position: relative; width: 400px; height: 300px">
+        <p id="3dmolwarning_15613911487341576" style="background-color:#ffcccc;color:black">You appear to be running in JupyterLab (or JavaScript failed to load for some other reason).  You need to install the 3dmol extension: <br>
+        <tt>jupyter labextension install jupyterlab_3dmol</tt></p>
+        </div>
+<script>
+
+var loadScriptAsync = function(uri){
+  return new Promise((resolve, reject) => {
+    var tag = document.createElement('script');
+    tag.src = uri;
+    tag.async = true;
+    tag.onload = () => {
+      resolve();
+    };
+  var firstScriptTag = document.getElementsByTagName('script')[0];
+  firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+});
+};
+
+if(typeof $3Dmolpromise === 'undefined') {
+$3Dmolpromise = null;
+  $3Dmolpromise = loadScriptAsync('https://3dmol.csb.pitt.edu/build/3Dmol.js');
+}
+
+var viewer_15613911487341576 = null;
+var warn = document.getElementById("3dmolwarning_15613911487341576");
+if(warn) {
+    warn.parentNode.removeChild(warn);
+}
+$3Dmolpromise.then(function() {
+viewer_15613911487341576 = $3Dmol.createViewer($("#3dmolviewer_15613911487341576"),{backgroundColor:"white"});
+	viewer_15613911487341576.removeAllModels();
+	viewer_15613911487341576.addModel("3IVX_FG6_A_302\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   18.6710   11.0570   -0.9580 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.1740   10.3380   -1.3780 N   0  0  0  0  0  0  0  0  0  0  0  0\n   18.3150   12.1710   -0.5580 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.6490   10.1280   -1.5980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   11.0750    9.7570   -5.0100 C   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0190   10.3670    1.2910 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1490   13.0720    3.7420 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0670   11.6710    3.5830 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.2690    8.7830    8.1850 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.9810    7.7440    7.3010 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7120    9.8780   -4.7050 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.8850    9.9210    7.6900 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3160    7.8940    5.9520 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.7120    9.9650   -3.7420 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.1110   10.3400   -2.9690 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.7670   10.9740    5.7220 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1290   10.6380   -0.7250 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.0740   11.3750    1.8160 N   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4620    9.9520   -5.3340 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3660    9.4720    4.2000 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8920   10.7650    0.9530 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3910   10.0610   -4.3290 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.8640   10.6520    4.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.4110   10.5900   -0.3130 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1880    9.9990    6.3980 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1080   10.4150   -2.0560 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.9070    9.0160    5.5280 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3880   10.2200   -2.4470 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.5540   11.6840    3.4010 S   0  0  0  0  0  0  0  0  0  0  0  0\n   19.8340   10.6020   -0.9190 O   0  0  0  0  0  0  0  0  0  0  0  0\n  4  1  1  0\n  1 30  2  0\n  1  3  1  0\n 28  2  1  0\n  4  2  1  0\n  2 24  1  0\n 19  5  1  0\n 21  6  2  0\n 29  7  2  0\n 29  8  2  0\n 10  9  2  0\n 12  9  1  0\n 13 10  1  0\n 11 22  2  0\n 11 14  1  0\n 25 12  2  0\n 27 13  2  0\n 14 28  2  0\n 22 15  1  0\n 15 26  2  0\n 23 16  2  0\n 16 25  1  0\n 26 17  1  0\n 17 24  2  0\n 21 18  1  0\n 18 29  1  0\n 19 22  1  0\n 20 23  1  0\n 20 27  1  0\n 24 21  1  0\n 29 23  1  0\n 27 25  1  0\n 28 26  1  0\nA    1\nC\nA    2\nN\nA    3\nO\nA    4\nCA\nA    5\nCAA\nA    6\nOAC\nA    7\nOAD\nA    8\nOAE\nA    9\nCAG\nA   10\nCAH\nA   11\nCAI\nA   12\nCAJ\nA   13\nCAK\nA   14\nCAL\nA   15\nCAM\nA   16\nCAN\nA   17\nCAO\nA   18\nNAQ\nA   19\nOAR\nA   20\nOAS\nA   21\nCAU\nA   22\nCAV\nA   23\nCAW\nA   24\nCAX\nA   25\nCAY\nA   26\nCAZ\nA   27\nCBA\nA   28\nCBB\nA   29\nSBD\nA   30\nOXT\nM  END\n","sdf");
+	viewer_15613911487341576.addModel("\n     RDKit          3D\n\n 30 33  0  0  0  0  0  0  0  0999 V2000\n   11.0955   10.3258   -5.1378 C   0  0  0  0  0  0  0  0  0  0  0  0\n   12.4371    9.8705   -5.2784 O   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3942    9.9026   -4.2537 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.6847    9.3986   -4.5288 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.6859    9.3937   -3.5418 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3687    9.9004   -2.2757 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1195   10.4006   -2.0119 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.1066   10.4187   -2.9678 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.1073   10.8380   -0.7085 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.3834   10.5726   -0.2167 C   0  0  0  0  0  0  0  0  0  0  0  0\n   15.8219   10.8979    1.1592 C   0  0  0  0  0  0  0  0  0  0  0  0\n   16.7564   10.2435    1.6934 O   0  0  0  0  0  0  0  0  0  0  0  0\n   15.1825   11.9507    1.8928 N   0  0  0  0  0  0  0  0  0  0  0  0\n   15.5911   12.2974    3.5403 S   0  0  0  0  0  0  0  0  0  0  0  0\n   14.9740   13.6114    3.9280 O   0  0  0  0  0  0  0  0  0  0  0  0\n   17.0842   12.3886    3.6841 O   0  0  0  0  0  0  0  0  0  0  0  0\n   14.9592   11.0353    4.5767 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.9824   11.0586    5.9665 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3739    9.8797    6.3299 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.0986    9.3443    7.5860 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.4478    8.0975    7.6371 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.0943    7.4251    6.4450 C   0  0  0  0  0  0  0  0  0  0  0  0\n   13.3870    7.9943    5.1913 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.0299    9.2299    5.1733 C   0  0  0  0  0  0  0  0  0  0  0  0\n   14.3869    9.9336    4.1274 O   0  0  0  0  0  0  0  0  0  0  0  0\n   16.1581    9.9925   -1.1795 N   0  0  0  0  0  0  0  0  0  0  0  0\n   17.5712    9.6011   -1.0705 C   0  0  0  0  0  0  0  0  0  0  0  0\n   18.4657   10.7956   -0.8918 C   0  0  0  0  0  0  0  0  0  0  0  0\n   19.5563   10.6618   -0.2778 O   0  0  0  0  0  0  0  0  0  0  0  0\n   18.1358   12.0408   -1.4221 O   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0\n  2  3  1  0\n  3  4  2  0\n  4  5  1  0\n  5  6  2  0\n  6  7  1  0\n  7  8  2  0\n  7  9  1  0\n  9 10  2  0\n 10 11  1  0\n 11 12  2  0\n 11 13  1  0\n 13 14  1  0\n 14 15  2  0\n 14 16  2  0\n 14 17  1  0\n 17 18  2  0\n 18 19  1  0\n 19 20  2  0\n 20 21  1  0\n 21 22  2  0\n 22 23  1  0\n 23 24  2  0\n 24 25  1  0\n 10 26  1  0\n 26 27  1  0\n 27 28  1  0\n 28 29  2  0\n 28 30  1  0\n  8  3  1  0\n 25 17  1  0\n 26  6  1  0\n 24 19  1  0\nM  END\n","sdf");
+	viewer_15613911487341576.setStyle({"stick": {}});
+	viewer_15613911487341576.setBackgroundColor("0xeeeeee");
+	viewer_15613911487341576.zoomTo();
+viewer_15613911487341576.render();
+});
+</script>
+</div>
+
+</div>
+
+</div>
+</div>
+
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="prompt input_prompt">
+</div>
+<div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h1 id="Conclusions">Conclusions<a class="anchor-link" href="#Conclusions">&#182;</a></h1><p>We have seen how to use the RDKit function <code>ConstrainedEmbed</code> and examined the energies of the conformation produced. In addition, we have explored two distinct strategies for ensuring the conformers are not strained (according to your favourite force field).</p>
+<p>Unforunately, using <code>ConstrainedEmbed</code> with two distinct fragments, rather than a single connected subcomponent, is relatively brittle and results in conformers not able to be generated.</p>
+<p>In a future notebook, I will describe a method that is more robust to changes in the core of a molecule but still allows good 3D alignment at energies similar to unconstrained conformer generation.</p>
+
+</div>
+</div>
+</div>
+ 
+
